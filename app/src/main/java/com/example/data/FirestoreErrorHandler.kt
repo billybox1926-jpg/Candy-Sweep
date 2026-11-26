@@ -21,37 +21,14 @@ fun handleFirestoreError(
     operationType: OperationType,
     path: String?
 ): String {
-    val causes = generateSequence(exception) { it.cause }
-    val rootError = causes.firstOrNull { it is FirebaseFirestoreException }
-        ?: causes.firstOrNull { it !is CancellationException }
-        ?: exception
+    val rootError = (generateSequence(exception) { it.cause }
+        .firstOrNull { it is FirebaseFirestoreException }
+        ?: generateSequence(exception) { it.cause }
+        .firstOrNull { it !is CancellationException }
+        ?: exception)
 
-    val auth = FirebaseAuth.getInstance()
-    val currentUser = auth.currentUser
-
-    val providerInfoList = currentUser?.providerData?.map { provider ->
-        JSONObject().apply {
-            put("providerId", provider.providerId)
-            put("email", provider.email)
-        }
-    } ?: emptyList()
-
-    val authInfoJson = JSONObject().apply {
-        put("userId", currentUser?.uid)
-        put("email", currentUser?.email)
-        put("emailVerified", currentUser?.isEmailVerified)
-        put("tenantId", currentUser?.tenantId)
-        put("providerInfo", JSONArray(providerInfoList))
-    }
-
-    val errorInfoJson = JSONObject().apply {
-        put("error", rootError.message ?: rootError.toString())
-        put("operationType", operationType.value)
-        put("path", path)
-        put("authInfo", authInfoJson)
-    }
-
-    val jsonString = errorInfoJson.toString()
-    Log.e("FirestoreError", "Firestore Error: $jsonString")
-    return jsonString
+    // Only log the fault itself, not identifying caller information. Email, UID
+    // and provider data are intentionally excluded from the logcat entry.
+    Log.e("FirestoreError", "Firestore Error: ${operationType.value} - ${rootError.message ?: rootError.toString()}")
+    return "${operationType.value}: ${rootError.message ?: rootError.toString()}"
 }
