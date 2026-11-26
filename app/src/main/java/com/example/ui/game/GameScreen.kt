@@ -3,12 +3,10 @@ package com.example.ui.game
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
-import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -71,7 +69,7 @@ import androidx.compose.runtime.key
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.scale
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -108,11 +106,7 @@ import com.example.ui.theme.StrawberryPop
 import com.example.viewmodel.GameBoardUiState
 import com.example.viewmodel.RunOutcome
 import com.example.viewmodel.SaveStatus
-import kotlin.math.PI
 import kotlin.math.abs
-import kotlin.math.cos
-import kotlin.math.roundToInt
-import kotlin.math.sin
 
 @Composable
 fun GameScreen(
@@ -489,7 +483,11 @@ private fun CandyBoardView(
             .semantics { contentDescription = boardCd }
             .testTag("candy_board")
     ) {
-        BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+        BoxWithConstraints(
+            modifier = Modifier
+                .fillMaxSize()
+                .clipToBounds()
+        ) {
             val density = LocalDensity.current
             val boardPx = with(density) { minOf(maxWidth, maxHeight).toPx() }
             val cellPx = boardPx / BOARD_SIZE
@@ -623,33 +621,9 @@ private fun CandyBoardView(
                         }
                     }
                 }
-
-                // Burst particle flashes on clearing cells
-                for (burst in gameState.bursts) {
-                    val cx = burst.col * cellPx + cellPx / 2f
-                    val cy = burst.row * cellPx + cellPx / 2f
-                    val cColor = burst.type.mainColor()
-                    drawCircle(
-                        color = Color.White.copy(alpha = 0.7f),
-                        radius = cellPx * (0.28f + pulse * 0.22f),
-                        center = Offset(cx, cy),
-                        style = Stroke(width = cellPx * 0.06f)
-                    )
-                    for (i in 0 until 6) {
-                        val angle = (i * 60.0) * PI / 180.0
-                        val dist = cellPx * (0.34f + pulse * 0.14f)
-                        val px = cx + (dist * cos(angle)).toFloat()
-                        val py = cy + (dist * sin(angle)).toFloat()
-                        drawCircle(
-                            color = if (i % 2 == 0) cColor else Color.White,
-                            radius = cellPx * 0.08f,
-                            center = Offset(px, py)
-                        )
-                    }
-                }
             }
 
-            // 2. Animated Candy Tiles keyed by stable tile.id for smooth swap & gravity motion
+            // 2. Animated Candy Tiles keyed by stable tile.id for smooth swap, removal pop & cascading refill
             val flattened = buildList {
                 for (r in 0 until BOARD_SIZE) {
                     for (c in 0 until BOARD_SIZE) {
@@ -661,83 +635,48 @@ private fun CandyBoardView(
                 }
             }
 
+            val bouncedSet = gameState.bouncedPair?.let { setOf(it.first, it.second) } ?: emptySet()
+            val isCascading = gameState.spawnedTileStartRows.isNotEmpty()
+
             for ((tile, row, col) in flattened) {
                 key(tile.id) {
-                    val animatedRow by animateFloatAsState(
-                        targetValue = row.toFloat(),
-                        animationSpec = spring(
-                            dampingRatio = Spring.DampingRatioMediumBouncy,
-                            stiffness = Spring.StiffnessMedium
-                        ),
-                        label = "tileRow"
-                    )
-                    val animatedCol by animateFloatAsState(
-                        targetValue = col.toFloat(),
-                        animationSpec = spring(
-                            dampingRatio = Spring.DampingRatioMediumBouncy,
-                            stiffness = Spring.StiffnessMedium
-                        ),
-                        label = "tileCol"
-                    )
-
                     val pos = CellPos(row, col)
-                    val isClearing = pos in gameState.clearingCells
-                    val isSelected = pos == gameState.selectedCell
-                    val isHinted = pos in gameState.hintCells
-
-                    val targetScale = when {
-                        isClearing -> 0.15f
-                        isSelected -> 1.12f
-                        isHinted -> 1.0f + pulse * 0.08f
-                        else -> 1f
-                    }
-                    val animatedScale by animateFloatAsState(
-                        targetValue = targetScale,
-                        animationSpec = tween(durationMillis = if (isClearing) 180 else 140),
-                        label = "tileScale"
+                    AnimatedCandyTile(
+                        tile = tile,
+                        row = row,
+                        col = col,
+                        cellPx = cellPx,
+                        cellDp = cellDp,
+                        pulse = pulse,
+                        spawnStartRow = gameState.spawnedTileStartRows[tile.id],
+                        isCascading = isCascading,
+                        isClearing = pos in gameState.clearingCells,
+                        isSelected = pos == gameState.selectedCell,
+                        isHinted = pos in gameState.hintCells,
+                        isBounced = pos in bouncedSet,
+                        isNewlySpawnedSpecial = tile.id in gameState.newlySpawnedSpecialIds
                     )
-
-                    Box(
-                        modifier = Modifier
-                            .offset {
-                                IntOffset(
-                                    x = (animatedCol * cellPx).roundToInt(),
-                                    y = (animatedRow * cellPx).roundToInt()
-                                )
-                            }
-                            .size(cellDp)
-                            .scale(animatedScale)
-                    ) {
-                        CandyGlyph(tile = tile, pulse = pulse)
-                    }
                 }
             }
 
-            // 3. Floating Score & Combo Callouts
+            // 3. Expanding Sugar-Sparkle Burst Particles on matched cells
+            for (burst in gameState.bursts) {
+                key(burst.id) {
+                    AnimatedBurstEffect(
+                        burst = burst,
+                        cellPx = cellPx
+                    )
+                }
+            }
+
+            // 4. Floating Score & Combo Callouts
             for (callout in gameState.callouts) {
                 key(callout.id) {
-                    Surface(
-                        shape = CircleShape,
-                        color = if (callout.highlight) HoneyGold else StrawberryPop,
-                        shadowElevation = 4.dp,
-                        modifier = Modifier.offset {
-                            IntOffset(
-                                x = ((callout.col * cellPx) - cellPx * 0.25f)
-                                    .roundToInt()
-                                    .coerceIn(0, (boardPx - cellPx * 2.2f).roundToInt().coerceAtLeast(0)),
-                                y = ((callout.row * cellPx) - cellPx * 0.35f)
-                                    .roundToInt()
-                                    .coerceAtLeast(0)
-                            )
-                        }
-                    ) {
-                        Text(
-                            text = callout.text,
-                            style = MaterialTheme.typography.labelLarge,
-                            color = if (callout.highlight) BerryPlumDeep else Color.White,
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
-                        )
-                    }
+                    AnimatedFloatingCallout(
+                        callout = callout,
+                        cellPx = cellPx,
+                        boardPx = boardPx
+                    )
                 }
             }
 
