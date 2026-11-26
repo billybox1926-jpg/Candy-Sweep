@@ -38,19 +38,14 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.AutoAwesome
-import androidx.compose.material.icons.rounded.CloudDone
-import androidx.compose.material.icons.rounded.CloudOff
 import androidx.compose.material.icons.rounded.Lightbulb
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Shuffle
 import androidx.compose.material.icons.rounded.Star
 import androidx.compose.material.icons.rounded.StarOutline
 import androidx.compose.material.icons.rounded.Timer
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
@@ -105,7 +100,6 @@ import com.example.ui.theme.MintSpark
 import com.example.ui.theme.StrawberryPop
 import com.example.viewmodel.GameBoardUiState
 import com.example.viewmodel.RunOutcome
-import com.example.viewmodel.SaveStatus
 import kotlin.math.abs
 
 @Composable
@@ -217,7 +211,7 @@ fun GameScreen(
             ) {
                 FilledTonalButton(
                     onClick = onRequestHint,
-                    enabled = !gameState.busy && gameState.outcome == RunOutcome.PLAYING,
+                    enabled = !gameState.busy && !gameState.isGameOver && !gameState.isOutOfMoves,
                     shape = RoundedCornerShape(16.dp),
                     modifier = Modifier
                         .weight(1f)
@@ -238,7 +232,7 @@ fun GameScreen(
 
                 FilledTonalButton(
                     onClick = onShuffle,
-                    enabled = !gameState.busy && gameState.outcome == RunOutcome.PLAYING,
+                    enabled = !gameState.busy && !gameState.isGameOver && !gameState.isOutOfMoves,
                     shape = RoundedCornerShape(16.dp),
                     modifier = Modifier
                         .weight(1f)
@@ -300,7 +294,6 @@ private fun GameHudCard(
     gameState: GameBoardUiState,
     personalBest: Long
 ) {
-    val lowMoves = gameState.movesLeft <= 5 && gameState.outcome == RunOutcome.PLAYING
     val star3 = gameState.stageConfig.starThresholds.third.coerceAtLeast(1L)
     val progress = (gameState.score.toFloat() / star3.toFloat()).coerceIn(0f, 1f)
     val animatedProgress by animateFloatAsState(
@@ -387,28 +380,12 @@ private fun GameHudCard(
                     }
                 }
 
-                // Moves Remaining Pill
-                Surface(
-                    shape = RoundedCornerShape(16.dp),
-                    color = if (lowMoves) StrawberryPop else BerryPlum
-                ) {
-                    Column(
-                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally
-                    ) {
-                        Text(
-                            text = stringResource(R.string.hud_moves),
-                            style = MaterialTheme.typography.labelSmall,
-                            color = Color.White.copy(alpha = 0.85f)
-                        )
-                        Text(
-                            text = "${gameState.movesLeft}",
-                            style = MaterialTheme.typography.titleLarge,
-                            color = Color.White,
-                            modifier = Modifier.testTag("hud_moves_value")
-                        )
-                    }
-                }
+                // Animated Move Counter Gauge & Low-Moves Warning Indicator
+                MoveCounterBadge(
+                    movesLeft = gameState.movesLeft,
+                    maxMoves = gameState.maxMoves,
+                    isPlaying = !gameState.isGameOver
+                )
             }
 
             // 3-Star Progress Bar
@@ -497,16 +474,16 @@ private fun CandyBoardView(
             Canvas(
                 modifier = Modifier
                     .fillMaxSize()
-                    .pointerInput(gameState.busy, gameState.outcome) {
-                        if (gameState.busy || gameState.outcome != RunOutcome.PLAYING) return@pointerInput
+                    .pointerInput(gameState.busy, gameState.outcome, gameState.movesLeft) {
+                        if (gameState.busy || gameState.isGameOver || gameState.isOutOfMoves) return@pointerInput
                         detectTapGestures { offset ->
                             val col = (offset.x / cellPx).toInt().coerceIn(0, BOARD_SIZE - 1)
                             val row = (offset.y / cellPx).toInt().coerceIn(0, BOARD_SIZE - 1)
                             onCellTapped(CellPos(row, col))
                         }
                     }
-                    .pointerInput(gameState.busy, gameState.outcome) {
-                        if (gameState.busy || gameState.outcome != RunOutcome.PLAYING) return@pointerInput
+                    .pointerInput(gameState.busy, gameState.outcome, gameState.movesLeft) {
+                        if (gameState.busy || gameState.isGameOver || gameState.isOutOfMoves) return@pointerInput
                         var startCell: CellPos? = null
                         var accumX = 0f
                         var accumY = 0f
@@ -704,236 +681,6 @@ private fun CandyBoardView(
                 }
             }
         }
-    }
-}
-
-@Composable
-private fun RunResultOverlay(
-    gameState: GameBoardUiState,
-    onNextStage: () -> Unit,
-    onPlayAgain: () -> Unit
-) {
-    val isVictory = gameState.outcome == RunOutcome.STAGE_CLEARED ||
-        gameState.outcome == RunOutcome.RUSH_COMPLETE
-    val titleRes = when (gameState.outcome) {
-        RunOutcome.STAGE_CLEARED -> R.string.result_stage_cleared
-        RunOutcome.RUSH_COMPLETE -> R.string.result_rush_complete
-        RunOutcome.OUT_OF_MOVES -> R.string.result_out_of_moves
-        RunOutcome.PLAYING -> R.string.result_stage_cleared
-    }
-
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(BerryPlumDeep.copy(alpha = 0.78f))
-            .padding(24.dp),
-        contentAlignment = Alignment.Center
-    ) {
-        Card(
-            shape = RoundedCornerShape(30.dp),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-            elevation = CardDefaults.cardElevation(defaultElevation = 10.dp),
-            modifier = Modifier
-                .widthIn(max = 420.dp)
-                .fillMaxWidth()
-                .testTag("run_result_card")
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(24.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(14.dp)
-            ) {
-                if (gameState.newPersonalBest) {
-                    Surface(
-                        shape = CircleShape,
-                        color = HoneyGold
-                    ) {
-                        Text(
-                            text = stringResource(R.string.result_new_best),
-                            style = MaterialTheme.typography.labelMedium,
-                            color = BerryPlumDeep,
-                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 5.dp)
-                        )
-                    }
-                }
-
-                Text(
-                    text = stringResource(titleRes),
-                    style = MaterialTheme.typography.headlineLarge,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    textAlign = TextAlign.Center
-                )
-
-                // Earned Stars Row
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    val stars = gameState.earnedStars
-                    for (i in 1..3) {
-                        Icon(
-                            imageVector = if (i <= stars) Icons.Rounded.Star else Icons.Rounded.StarOutline,
-                            contentDescription = if (i <= stars) {
-                                stringResource(R.string.cd_star_earned)
-                            } else {
-                                stringResource(R.string.cd_star_unearned)
-                            },
-                            tint = if (i <= stars) HoneyGold else MaterialTheme.colorScheme.outline,
-                            modifier = Modifier.size(38.dp)
-                        )
-                    }
-                }
-
-                // Final Score Display
-                Text(
-                    text = formatNumber(gameState.score),
-                    style = MaterialTheme.typography.displayLarge,
-                    color = StrawberryPop
-                )
-
-                // Compact Stats Row
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceEvenly
-                ) {
-                    ResultMiniStat(
-                        label = stringResource(R.string.stat_candies_swept),
-                        value = "${gameState.candiesCleared}"
-                    )
-                    ResultMiniStat(
-                        label = stringResource(R.string.stat_best_combo),
-                        value = "x${gameState.maxCombo}"
-                    )
-                    ResultMiniStat(
-                        label = stringResource(R.string.hud_moves),
-                        value = "${gameState.movesUsed}"
-                    )
-                }
-
-                // Cloud Sync Status Pill
-                Surface(
-                    shape = CircleShape,
-                    color = MaterialTheme.colorScheme.surfaceVariant
-                ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        when (gameState.saveStatus) {
-                            SaveStatus.SAVING -> {
-                                CircularProgressIndicator(
-                                    modifier = Modifier.size(14.dp),
-                                    strokeWidth = 2.dp
-                                )
-                                Text(
-                                    text = stringResource(R.string.result_saving_score),
-                                    style = MaterialTheme.typography.bodySmall
-                                )
-                            }
-                            SaveStatus.SAVED -> {
-                                Icon(
-                                    imageVector = Icons.Rounded.CloudDone,
-                                    contentDescription = null,
-                                    tint = MintSpark,
-                                    modifier = Modifier.size(16.dp)
-                                )
-                                Text(
-                                    text = stringResource(R.string.result_score_saved),
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MintSpark
-                                )
-                            }
-                            SaveStatus.FAILED -> {
-                                Icon(
-                                    imageVector = Icons.Rounded.CloudOff,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.error,
-                                    modifier = Modifier.size(16.dp)
-                                )
-                                Text(
-                                    text = stringResource(R.string.result_save_failed),
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.error
-                                )
-                            }
-                            SaveStatus.IDLE -> Unit
-                        }
-                    }
-                }
-
-                Spacer(Modifier.height(4.dp))
-
-                if (isVictory && gameState.stageConfig.mode == GameMode.CLEANUP) {
-                    Button(
-                        onClick = onNextStage,
-                        shape = RoundedCornerShape(18.dp),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = StrawberryPop,
-                            contentColor = Color.White
-                        ),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(52.dp)
-                            .minimumInteractiveComponentSize()
-                            .testTag("next_stage_button")
-                    ) {
-                        Text(
-                            text = stringResource(R.string.result_next_stage),
-                            style = MaterialTheme.typography.titleMedium
-                        )
-                    }
-                    OutlinedButton(
-                        onClick = onPlayAgain,
-                        shape = RoundedCornerShape(18.dp),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(48.dp)
-                            .minimumInteractiveComponentSize()
-                            .testTag("play_again_button")
-                    ) {
-                        Text(
-                            text = stringResource(R.string.result_play_again),
-                            style = MaterialTheme.typography.labelLarge
-                        )
-                    }
-                } else {
-                    Button(
-                        onClick = onPlayAgain,
-                        shape = RoundedCornerShape(18.dp),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = StrawberryPop,
-                            contentColor = Color.White
-                        ),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(52.dp)
-                            .minimumInteractiveComponentSize()
-                            .testTag("play_again_button")
-                    ) {
-                        Text(
-                            text = stringResource(R.string.result_play_again),
-                            style = MaterialTheme.typography.titleMedium
-                        )
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun ResultMiniStat(label: String, value: String) {
-    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        Text(
-            text = value,
-            style = MaterialTheme.typography.titleLarge,
-            color = MaterialTheme.colorScheme.onSurface
-        )
-        Text(
-            text = label,
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
     }
 }
 

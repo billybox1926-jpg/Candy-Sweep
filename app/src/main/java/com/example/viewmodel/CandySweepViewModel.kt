@@ -14,9 +14,12 @@ import com.example.game.CandyTile
 import com.example.game.CandyType
 import com.example.game.CellPos
 import com.example.game.MatchResolution
+import com.example.game.MoveRules
+import com.example.game.MoveUrgency
 import com.example.game.StageConfig
 import com.example.game.SwipeAttempt
 import com.example.game.SwipeDirection
+import com.example.game.TurnOutcome
 import com.google.firebase.firestore.FirebaseFirestoreException
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
@@ -93,6 +96,18 @@ data class GameBoardUiState(
 
     val frostingRemaining: Int
         get() = candyBoard.frostingRemaining
+
+    val maxMoves: Int
+        get() = stageConfig.maxMoves
+
+    val moveUrgency: MoveUrgency
+        get() = MoveRules.urgencyFor(movesLeft)
+
+    val isOutOfMoves: Boolean
+        get() = movesLeft <= 0
+
+    val isGameOver: Boolean
+        get() = outcome != RunOutcome.PLAYING
 
     val earnedStars: Int
         get() {
@@ -217,7 +232,7 @@ class CandySweepViewModel(
 
     fun onCellTapped(pos: CellPos) {
         val state = _gameState.value
-        if (state.busy || state.outcome != RunOutcome.PLAYING) return
+        if (state.busy || state.isGameOver || state.isOutOfMoves) return
 
         val currentlySelected = state.selectedCell
         when {
@@ -239,7 +254,7 @@ class CandySweepViewModel(
 
     fun onSwipe(from: CellPos, dRow: Int, dCol: Int) {
         val state = _gameState.value
-        if (state.busy || state.outcome != RunOutcome.PLAYING) return
+        if (state.busy || state.isGameOver || state.isOutOfMoves) return
         val direction = SwipeDirection.fromDelta(dRow, dCol) ?: return
         val target = state.candyBoard.targetOf(from, direction) ?: return
         _gameState.update { it.copy(selectedCell = null, hintCells = emptySet()) }
@@ -248,14 +263,14 @@ class CandySweepViewModel(
 
     fun requestHint() {
         val state = _gameState.value
-        if (state.busy || state.outcome != RunOutcome.PLAYING) return
+        if (state.busy || state.isGameOver || state.isOutOfMoves) return
         val hint = state.candyBoard.findHintMove() ?: return
         _gameState.update { it.copy(hintCells = setOf(hint.first, hint.second)) }
     }
 
     fun manualShuffle() {
         val state = _gameState.value
-        if (state.busy || state.outcome != RunOutcome.PLAYING) return
+        if (state.busy || state.isGameOver || state.isOutOfMoves) return
         viewModelScope.launch {
             _gameState.update { it.copy(busy = true, selectedCell = null, hintCells = emptySet()) }
             val shuffledBoard = state.candyBoard.shuffle()
@@ -311,7 +326,7 @@ class CandySweepViewModel(
                 is SwipeAttempt.ValidMatch -> {
                     _gameState.update {
                         it.copy(
-                            movesLeft = (it.movesLeft - 1).coerceAtLeast(0),
+                            movesLeft = MoveRules.consumeMove(it.movesLeft),
                             movesUsed = it.movesUsed + 1,
                             currentCombo = 0
                         )
@@ -404,20 +419,23 @@ class CandySweepViewModel(
 
                     val afterTurn = _gameState.value
                     val mode = afterTurn.stageConfig.mode
-                    when {
-                        mode == GameMode.CLEANUP && afterTurn.frostingRemaining == 0 -> {
-                            val moveBonus = afterTurn.movesLeft * 250L
+                    val turnOutcome = MoveRules.evaluateTurnOutcome(
+                        mode = mode,
+                        movesLeft = afterTurn.movesLeft,
+                        frostingRemaining = afterTurn.frostingRemaining
+                    )
+                    when (turnOutcome) {
+                        TurnOutcome.STAGE_CLEARED -> {
+                            val moveBonus = MoveRules.unusedMoveBonus(turnOutcome, afterTurn.movesLeft)
                             finishRun(RunOutcome.STAGE_CLEARED, afterTurn.score + moveBonus)
                         }
-                        afterTurn.movesLeft <= 0 -> {
-                            val outcome = if (mode == GameMode.SCORE_RUSH) {
-                                RunOutcome.RUSH_COMPLETE
-                            } else {
-                                RunOutcome.OUT_OF_MOVES
-                            }
-                            finishRun(outcome, afterTurn.score)
+                        TurnOutcome.RUSH_COMPLETE -> {
+                            finishRun(RunOutcome.RUSH_COMPLETE, afterTurn.score)
                         }
-                        else -> {
+                        TurnOutcome.OUT_OF_MOVES -> {
+                            finishRun(RunOutcome.OUT_OF_MOVES, afterTurn.score)
+                        }
+                        TurnOutcome.CONTINUE -> {
                             if (!activeBoard.hasValidMoves()) {
                                 val reshuffled = activeBoard.shuffle()
                                 _gameState.update {
@@ -429,7 +447,26 @@ class CandySweepViewModel(
                                 delay(1100)
                                 _gameState.update { it.copy(bannerMessage = null, busy = false) }
                             } else {
-                                _gameState.update { it.copy(busy = false) }
+                                val lowMoveCue = when (afterTurn.movesLeft) {
+                                    MoveRules.LOW_MOVES_THRESHOLD -> "${MoveRules.LOW_MOVES_THRESHOLD} Moves Left!"
+                                    MoveRules.CRITICAL_MOVES_THRESHOLD -> "Last Move!"
+                                    else -> null
+                                }
+                                _gameState.update {
+                                    it.copy(
+                                        busy = false,
+                                        bannerMessage = lowMoveCue,
+                                        hapticEventToken = if (lowMoveCue != null) nextEventId() else it.hapticEventToken
+                                    )
+                                }
+                                if (lowMoveCue != null) {
+                                    viewModelScope.launch {
+                                        delay(1150)
+                                        _gameState.update { st ->
+                                            if (st.bannerMessage == lowMoveCue) st.copy(bannerMessage = null) else st
+                                        }
+                                    }
+                                }
                             }
                             scheduleIdleHint()
                         }
