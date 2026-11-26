@@ -49,8 +49,8 @@ service cloud.firestore {
              data.bestCombo is int && data.bestCombo >= 0 && data.bestCombo <= 500 &&
              data.gamesPlayed is int && data.gamesPlayed >= 0 && data.gamesPlayed <= 1000000 &&
              data.hapticsEnabled is bool &&
-             data.createdAt is timestamp && data.createdAt <= request.time &&
-             data.updatedAt is timestamp && data.updatedAt <= request.time;
+             data.createdAt is timestamp && data.createdAt == request.time &&
+             data.updatedAt is timestamp && data.updatedAt == request.time;
     }
 
     function isValidScoreRecord(data, userId) {
@@ -72,8 +72,8 @@ service cloud.firestore {
              data.candiesCleared is int && data.candiesCleared >= 0 && data.candiesCleared <= 100000 &&
              data.maxCombo is int && data.maxCombo >= 1 && data.maxCombo <= 500 &&
              data.movesUsed is int && data.movesUsed >= 0 && data.movesUsed <= 500 &&
-             data.createdAt is timestamp && data.createdAt <= request.time &&
-             data.updatedAt is timestamp && data.updatedAt <= request.time;
+             data.createdAt is timestamp && data.createdAt == request.time &&
+             data.updatedAt is timestamp && data.updatedAt == request.time;
     }
 
     // --- Collection Rules ---
