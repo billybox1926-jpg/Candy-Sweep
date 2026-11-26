@@ -2,5 +2,7 @@
   "name": "Candy Sweep",
   "description": "Swipe to match colorful candies, trigger cascading combos, clear sticky boards, and track cloud-synced high scores.",
   "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
 }
