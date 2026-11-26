@@ -1,0 +1,137 @@
+{
+  "entities": {
+    "PlayerProfile": {
+      "title": "PlayerProfile",
+      "description": "Authenticated player profile, cumulative candy clean-up stats, stage progression, and gameplay preferences.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "Authenticated Firebase Auth UID of the profile owner."
+        },
+        "displayName": {
+          "type": "string",
+          "description": "Player arcade display name (1 to 40 characters)."
+        },
+        "bestScore": {
+          "type": "integer",
+          "description": "Highest single-run score achieved across all modes."
+        },
+        "highestStage": {
+          "type": "integer",
+          "description": "Highest Clean-Up stage unlocked (starts at 1)."
+        },
+        "totalCandiesCleared": {
+          "type": "integer",
+          "description": "Cumulative count of candies cleared across all runs."
+        },
+        "bestCombo": {
+          "type": "integer",
+          "description": "Highest cascading combo multiplier achieved in a single turn."
+        },
+        "gamesPlayed": {
+          "type": "integer",
+          "description": "Total number of completed runs."
+        },
+        "hapticsEnabled": {
+          "type": "boolean",
+          "description": "Whether tactile haptic feedback is enabled during swipes and matches."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp (FieldValue.serverTimestamp()) when profile was created."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp (FieldValue.serverTimestamp()) when profile was last updated."
+        }
+      },
+      "required": [
+        "userId",
+        "displayName",
+        "bestScore",
+        "highestStage",
+        "totalCandiesCleared",
+        "bestCombo",
+        "gamesPlayed",
+        "hapticsEnabled",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "ScoreRecord": {
+      "title": "ScoreRecord",
+      "description": "Immutable record of a completed Candy Sweep game run for personal high-score history.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "Authenticated Firebase Auth UID of the score owner."
+        },
+        "mode": {
+          "type": "string",
+          "enum": ["CLEANUP", "SCORE_RUSH"],
+          "description": "Game mode played: CLEANUP (frosting stage) or SCORE_RUSH (25-move blitz)."
+        },
+        "score": {
+          "type": "integer",
+          "description": "Final score achieved during the run."
+        },
+        "stage": {
+          "type": "integer",
+          "description": "Stage number played (1 or higher)."
+        },
+        "stars": {
+          "type": "integer",
+          "description": "Star rating earned (0 to 3)."
+        },
+        "candiesCleared": {
+          "type": "integer",
+          "description": "Number of candies cleared in the run."
+        },
+        "maxCombo": {
+          "type": "integer",
+          "description": "Highest combo chain reached during the run."
+        },
+        "movesUsed": {
+          "type": "integer",
+          "description": "Total moves used during the run."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp (FieldValue.serverTimestamp()) when the run was recorded."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp (FieldValue.serverTimestamp()) when the run was recorded."
+        }
+      },
+      "required": [
+        "userId",
+        "mode",
+        "score",
+        "stage",
+        "stars",
+        "candiesCleared",
+        "maxCombo",
+        "movesUsed",
+        "createdAt",
+        "updatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/PlayerProfile" },
+      "description": "Per-user player profile, cumulative candy clean-up statistics, unlocked stage progression, and settings."
+    },
+    "/users/{userId}/scores/{scoreId}": {
+      "schema": { "$ref": "#/entities/ScoreRecord" },
+      "description": "User-scoped high-score history subcollection storing completed game runs."
+    }
+  }
+}

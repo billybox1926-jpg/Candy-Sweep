@@ -1,0 +1,523 @@
+package com.example.viewmodel
+
+import android.util.Log
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import com.example.data.CandyRepository
+import com.example.data.GameMode
+import com.example.data.PlayerProfile
+import com.example.data.ScoreRecord
+import com.example.data.UiState
+import com.example.game.BOARD_SIZE
+import com.example.game.CandyEngine
+import com.example.game.CandyTile
+import com.example.game.CandyType
+import com.example.game.CellPos
+import com.example.game.StageConfig
+import com.google.firebase.firestore.FirebaseFirestoreException
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+
+data class FloatingCallout(
+    val id: Long,
+    val row: Float,
+    val col: Float,
+    val text: String,
+    val highlight: Boolean = false
+)
+
+data class BurstParticle(
+    val id: Long,
+    val row: Int,
+    val col: Int,
+    val type: CandyType
+)
+
+enum class RunOutcome {
+    PLAYING,
+    STAGE_CLEARED,
+    OUT_OF_MOVES,
+    RUSH_COMPLETE
+}
+
+enum class SaveStatus {
+    IDLE,
+    SAVING,
+    SAVED,
+    FAILED
+}
+
+data class GameBoardUiState(
+    val stageConfig: StageConfig,
+    val board: List<List<CandyTile?>>,
+    val frosting: List<List<Int>>,
+    val score: Long = 0L,
+    val movesLeft: Int = stageConfig.maxMoves,
+    val movesUsed: Int = 0,
+    val candiesCleared: Int = 0,
+    val maxCombo: Int = 1,
+    val currentCombo: Int = 0,
+    val selectedCell: CellPos? = null,
+    val hintCells: Set<CellPos> = emptySet(),
+    val clearingCells: Set<CellPos> = emptySet(),
+    val bouncedPair: Pair<CellPos, CellPos>? = null,
+    val callouts: List<FloatingCallout> = emptyList(),
+    val bursts: List<BurstParticle> = emptyList(),
+    val bannerMessage: String? = null,
+    val busy: Boolean = false,
+    val outcome: RunOutcome = RunOutcome.PLAYING,
+    val newPersonalBest: Boolean = false,
+    val saveStatus: SaveStatus = SaveStatus.IDLE,
+    val hapticEventToken: Long = 0L,
+    val bigHapticEventToken: Long = 0L
+) {
+    val frostingRemaining: Int
+        get() = frosting.sumOf { row -> row.sum() }
+
+    val earnedStars: Int
+        get() {
+            val (s1, s2, s3) = stageConfig.starThresholds
+            return when {
+                score >= s3 -> 3
+                score >= s2 -> 2
+                score >= s1 -> 1
+                outcome == RunOutcome.STAGE_CLEARED -> 1
+                else -> 0
+            }
+        }
+}
+
+class CandySweepViewModel(
+    private val repository: CandyRepository,
+    private val currentUserId: String,
+    initialDisplayName: String
+) : ViewModel() {
+
+    val profileState: StateFlow<UiState<PlayerProfile?>> = repository.observeProfile(currentUserId)
+        .map<PlayerProfile?, UiState<PlayerProfile?>> { UiState.Success(it) }
+        .catch { error ->
+            val firestoreError = generateSequence(error) { it.cause }
+                .filterIsInstance<FirebaseFirestoreException>()
+                .firstOrNull()
+            if (firestoreError == null && error is CancellationException) throw error
+            val rootError = firestoreError ?: error
+            Log.w(TAG, "Error observing profile", rootError)
+            emit(UiState.Error(rootError.localizedMessage ?: "Failed to load player profile"))
+        }
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(STOP_TIMEOUT_MILLIS),
+            initialValue = UiState.Loading
+        )
+
+    val scoresState: StateFlow<UiState<List<ScoreRecord>>> = repository.observeScores(currentUserId)
+        .map<List<ScoreRecord>, UiState<List<ScoreRecord>>> { UiState.Success(it) }
+        .catch { error ->
+            val firestoreError = generateSequence(error) { it.cause }
+                .filterIsInstance<FirebaseFirestoreException>()
+                .firstOrNull()
+            if (firestoreError == null && error is CancellationException) throw error
+            val rootError = firestoreError ?: error
+            Log.w(TAG, "Error observing scores", rootError)
+            emit(UiState.Error(rootError.localizedMessage ?: "Failed to load high scores"))
+        }
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(STOP_TIMEOUT_MILLIS),
+            initialValue = UiState.Loading
+        )
+
+    private val _gameState = MutableStateFlow(createInitialGameState(GameMode.CLEANUP, 1))
+    val gameState: StateFlow<GameBoardUiState> = _gameState.asStateFlow()
+
+    private val _profileFeedback = MutableStateFlow<String?>(null)
+    val profileFeedback: StateFlow<String?> = _profileFeedback.asStateFlow()
+
+    private var eventIdCounter = 1L
+    private var idleHintJob: Job? = null
+    private var syncedInitialStage = false
+
+    init {
+        viewModelScope.launch {
+            val result = repository.ensureProfile(currentUserId, initialDisplayName)
+            result.onSuccess { profile ->
+                if (!syncedInitialStage && _gameState.value.movesUsed == 0) {
+                    syncedInitialStage = true
+                    val startStage = profile.highestStage.toInt().coerceAtLeast(1)
+                    if (startStage > 1) {
+                        startNewGame(GameMode.CLEANUP, startStage)
+                    }
+                }
+            }
+        }
+        scheduleIdleHint()
+    }
+
+    private fun createInitialGameState(mode: GameMode, stage: Int): GameBoardUiState {
+        val config = CandyEngine.buildStageConfig(mode, stage)
+        val board = CandyEngine.generatePlayableBoard()
+        return GameBoardUiState(
+            stageConfig = config,
+            board = board,
+            frosting = config.initialFrosting
+        )
+    }
+
+    fun startNewGame(mode: GameMode = _gameState.value.stageConfig.mode, stage: Int? = null) {
+        val profileStage = (profileState.value as? UiState.Success)?.data?.highestStage?.toInt() ?: 1
+        val targetStage = when {
+            mode == GameMode.SCORE_RUSH -> 1
+            stage != null -> stage.coerceAtLeast(1)
+            else -> profileStage.coerceAtLeast(1)
+        }
+        _gameState.value = createInitialGameState(mode, targetStage)
+        scheduleIdleHint()
+    }
+
+    fun startNextStage() {
+        val nextStage = _gameState.value.stageConfig.stageNumber + 1
+        startNewGame(GameMode.CLEANUP, nextStage)
+    }
+
+    fun switchMode(mode: GameMode) {
+        if (_gameState.value.busy) return
+        val profileStage = (profileState.value as? UiState.Success)?.data?.highestStage?.toInt() ?: 1
+        val stage = if (mode == GameMode.CLEANUP) profileStage.coerceAtLeast(1) else 1
+        startNewGame(mode, stage)
+    }
+
+    fun onCellTapped(pos: CellPos) {
+        val state = _gameState.value
+        if (state.busy || state.outcome != RunOutcome.PLAYING) return
+
+        val currentlySelected = state.selectedCell
+        when {
+            currentlySelected == null -> {
+                _gameState.update { it.copy(selectedCell = pos, hintCells = emptySet()) }
+            }
+            currentlySelected == pos -> {
+                _gameState.update { it.copy(selectedCell = null) }
+            }
+            currentlySelected.isAdjacentTo(pos) -> {
+                _gameState.update { it.copy(selectedCell = null, hintCells = emptySet()) }
+                attemptSwap(currentlySelected, pos)
+            }
+            else -> {
+                _gameState.update { it.copy(selectedCell = pos, hintCells = emptySet()) }
+            }
+        }
+    }
+
+    fun onSwipe(from: CellPos, dRow: Int, dCol: Int) {
+        val state = _gameState.value
+        if (state.busy || state.outcome != RunOutcome.PLAYING) return
+        val targetRow = from.row + dRow
+        val targetCol = from.col + dCol
+        if (targetRow !in 0 until BOARD_SIZE || targetCol !in 0 until BOARD_SIZE) return
+        _gameState.update { it.copy(selectedCell = null, hintCells = emptySet()) }
+        attemptSwap(from, CellPos(targetRow, targetCol))
+    }
+
+    fun requestHint() {
+        val state = _gameState.value
+        if (state.busy || state.outcome != RunOutcome.PLAYING) return
+        val hint = CandyEngine.findHintMove(state.board) ?: return
+        _gameState.update { it.copy(hintCells = setOf(hint.first, hint.second)) }
+    }
+
+    fun manualShuffle() {
+        val state = _gameState.value
+        if (state.busy || state.outcome != RunOutcome.PLAYING) return
+        viewModelScope.launch {
+            _gameState.update { it.copy(busy = true, selectedCell = null, hintCells = emptySet()) }
+            val nonNullBoard = state.board.map { row -> row.map { it!! } }
+            val shuffled = CandyEngine.shufflePreservingSpecials(nonNullBoard)
+            _gameState.update {
+                it.copy(
+                    board = shuffled,
+                    bannerMessage = "Fresh candy mix!",
+                    busy = false,
+                    hapticEventToken = nextEventId()
+                )
+            }
+            delay(1100)
+            _gameState.update { it.copy(bannerMessage = null) }
+            scheduleIdleHint()
+        }
+    }
+
+    private fun attemptSwap(a: CellPos, b: CellPos) {
+        idleHintJob?.cancel()
+        viewModelScope.launch {
+            val initial = _gameState.value
+            val isSpecialSwap = CandyEngine.isSpecialPairSwap(initial.board, a, b)
+            val swappedBoard = CandyEngine.swap(initial.board, a, b)
+
+            _gameState.update {
+                it.copy(
+                    board = swappedBoard,
+                    busy = true,
+                    hapticEventToken = nextEventId()
+                )
+            }
+            delay(150)
+
+            val firstResolution = if (isSpecialSwap) {
+                CandyEngine.resolveSpecialPairSwap(swappedBoard, a, b)
+            } else {
+                CandyEngine.findMatches(swappedBoard, setOf(a, b))
+            }
+
+            if (firstResolution == null || firstResolution.clearedCells.isEmpty()) {
+                // Invalid swap: animate quick bounce-back
+                _gameState.update {
+                    it.copy(
+                        board = initial.board,
+                        bouncedPair = a to b
+                    )
+                }
+                delay(180)
+                _gameState.update { it.copy(bouncedPair = null, busy = false) }
+                scheduleIdleHint()
+                return@launch
+            }
+
+            // Valid move: decrement moves & begin cascade loop
+            _gameState.update {
+                it.copy(
+                    movesLeft = (it.movesLeft - 1).coerceAtLeast(0),
+                    movesUsed = it.movesUsed + 1,
+                    currentCombo = 0
+                )
+            }
+
+            var currentBoard = swappedBoard
+            var currentFrosting = _gameState.value.frosting
+            var resolution: com.example.game.MatchResolution? = firstResolution
+            var comboStep = 0
+
+            while (resolution != null && resolution.clearedCells.isNotEmpty()) {
+                comboStep++
+                val cleared = resolution.clearedCells
+                val multiplier = 1.0 + (comboStep - 1) * 0.45
+
+                // Clean frosting on cleared cells
+                var frostingClearedThisStep = 0
+                val updatedFrosting = currentFrosting.mapIndexed { r, rowList ->
+                    rowList.mapIndexed { c, layer ->
+                        if (layer > 0 && CellPos(r, c) in cleared) {
+                            frostingClearedThisStep++
+                            layer - 1
+                        } else {
+                            layer
+                        }
+                    }
+                }
+
+                val stepPoints = ((resolution.basePoints + frostingClearedThisStep * 120L) * multiplier).toLong()
+                val bursts = cleared.mapNotNull { pos ->
+                    currentBoard[pos.row][pos.col]?.let { tile ->
+                        BurstParticle(id = nextEventId(), row = pos.row, col = pos.col, type = tile.type)
+                    }
+                }
+                val avgRow = cleared.map { it.row }.average().toFloat()
+                val avgCol = cleared.map { it.col }.average().toFloat()
+                val calloutText = if (comboStep >= 2) "+$stepPoints  x$comboStep!" else "+$stepPoints"
+                val callout = FloatingCallout(
+                    id = nextEventId(),
+                    row = avgRow,
+                    col = avgCol,
+                    text = calloutText,
+                    highlight = comboStep >= 2 || resolution.triggeredSpecialCount > 0
+                )
+
+                val bigHit = comboStep >= 2 || resolution.triggeredSpecialCount > 0 || frostingClearedThisStep > 0
+                _gameState.update { st ->
+                    st.copy(
+                        clearingCells = cleared,
+                        frosting = updatedFrosting,
+                        score = st.score + stepPoints,
+                        candiesCleared = st.candiesCleared + cleared.size,
+                        currentCombo = comboStep,
+                        maxCombo = maxOf(st.maxCombo, comboStep),
+                        bursts = bursts,
+                        callouts = (st.callouts + callout).takeLast(5),
+                        bannerMessage = if (comboStep >= 2) "x$comboStep Sweet Combo!" else st.bannerMessage,
+                        bigHapticEventToken = if (bigHit) nextEventId() else st.bigHapticEventToken,
+                        hapticEventToken = if (!bigHit) nextEventId() else st.hapticEventToken
+                    )
+                }
+
+                delay(210)
+
+                // Remove cleared tiles and place newly spawned special candies
+                val afterRemoval = currentBoard.mapIndexed { r, rowList ->
+                    rowList.mapIndexed { c, tile ->
+                        val pos = CellPos(r, c)
+                        when {
+                            pos in resolution.spawnedSpecials -> resolution.spawnedSpecials[pos]
+                            pos in cleared -> null
+                            else -> tile
+                        }
+                    }
+                }
+
+                // Apply gravity & refill
+                val refilled = CandyEngine.applyGravityAndRefill(afterRemoval)
+                currentBoard = refilled
+                currentFrosting = updatedFrosting
+
+                _gameState.update {
+                    it.copy(
+                        board = refilled,
+                        clearingCells = emptySet(),
+                        bursts = emptyList()
+                    )
+                }
+                delay(220)
+
+                resolution = CandyEngine.findMatches(currentBoard)
+            }
+
+            // Clear temporary callouts & combo banner
+            _gameState.update { it.copy(currentCombo = 0, bannerMessage = null, callouts = emptyList()) }
+
+            // Check win / loss conditions
+            val afterTurn = _gameState.value
+            val mode = afterTurn.stageConfig.mode
+            when {
+                mode == GameMode.CLEANUP && afterTurn.frostingRemaining == 0 -> {
+                    val moveBonus = afterTurn.movesLeft * 250L
+                    val finalScore = afterTurn.score + moveBonus
+                    finishRun(RunOutcome.STAGE_CLEARED, finalScore)
+                }
+                afterTurn.movesLeft <= 0 -> {
+                    val outcome = if (mode == GameMode.SCORE_RUSH) {
+                        RunOutcome.RUSH_COMPLETE
+                    } else {
+                        RunOutcome.OUT_OF_MOVES
+                    }
+                    finishRun(outcome, afterTurn.score)
+                }
+                else -> {
+                    // Deadlock check: ensure at least one valid move exists
+                    if (CandyEngine.findHintMove(currentBoard) == null) {
+                        val nonNull = currentBoard.map { row -> row.map { it!! } }
+                        val reshuffled = CandyEngine.shufflePreservingSpecials(nonNull)
+                        _gameState.update {
+                            it.copy(
+                                board = reshuffled,
+                                bannerMessage = "No moves left — reshuffling!"
+                            )
+                        }
+                        delay(1100)
+                        _gameState.update { it.copy(bannerMessage = null, busy = false) }
+                    } else {
+                        _gameState.update { it.copy(busy = false) }
+                    }
+                    scheduleIdleHint()
+                }
+            }
+        }
+    }
+
+    private fun finishRun(outcome: RunOutcome, finalScore: Long) {
+        val currentProfile = (profileState.value as? UiState.Success)?.data
+        val previousBest = currentProfile?.bestScore ?: 0L
+        val isNewBest = finalScore > previousBest && finalScore > 0L
+
+        _gameState.update {
+            it.copy(
+                score = finalScore,
+                outcome = outcome,
+                busy = false,
+                newPersonalBest = isNewBest,
+                saveStatus = SaveStatus.SAVING,
+                bigHapticEventToken = nextEventId()
+            )
+        }
+
+        val snapshot = _gameState.value
+        viewModelScope.launch {
+            val result = repository.recordGameResult(
+                userId = currentUserId,
+                currentProfile = currentProfile,
+                mode = snapshot.stageConfig.mode,
+                score = snapshot.score,
+                stage = snapshot.stageConfig.stageNumber,
+                stars = snapshot.earnedStars,
+                candiesCleared = snapshot.candiesCleared,
+                maxCombo = snapshot.maxCombo,
+                movesUsed = snapshot.movesUsed,
+                stageCleared = outcome == RunOutcome.STAGE_CLEARED
+            )
+            _gameState.update {
+                it.copy(
+                    saveStatus = if (result.isSuccess) SaveStatus.SAVED else SaveStatus.FAILED
+                )
+            }
+        }
+    }
+
+    fun updateProfileSettings(displayName: String, hapticsEnabled: Boolean) {
+        val trimmed = displayName.trim()
+        if (trimmed.isEmpty() || trimmed.length > 40) {
+            _profileFeedback.value = "Enter 1 to 40 characters"
+            return
+        }
+        viewModelScope.launch {
+            val res = repository.updateProfileSettings(currentUserId, trimmed, hapticsEnabled)
+            _profileFeedback.value = if (res.isSuccess) {
+                "Profile updated"
+            } else {
+                res.exceptionOrNull()?.localizedMessage ?: "Failed to update profile"
+            }
+        }
+    }
+
+    fun toggleHaptics(enabled: Boolean) {
+        val profile = (profileState.value as? UiState.Success)?.data ?: return
+        updateProfileSettings(profile.displayName, enabled)
+    }
+
+    fun deleteScore(scoreId: String) {
+        viewModelScope.launch {
+            repository.deleteScoreRecord(currentUserId, scoreId)
+        }
+    }
+
+    fun clearProfileFeedback() {
+        _profileFeedback.value = null
+    }
+
+    private fun scheduleIdleHint() {
+        idleHintJob?.cancel()
+        idleHintJob = viewModelScope.launch {
+            delay(5500)
+            val state = _gameState.value
+            if (!state.busy && state.outcome == RunOutcome.PLAYING && state.hintCells.isEmpty()) {
+                val hint = CandyEngine.findHintMove(state.board)
+                if (hint != null) {
+                    _gameState.update { it.copy(hintCells = setOf(hint.first, hint.second)) }
+                }
+            }
+        }
+    }
+
+    private fun nextEventId(): Long = eventIdCounter++
+
+    private companion object {
+        const val TAG = "CandySweepVM"
+        const val STOP_TIMEOUT_MILLIS = 5000L
+    }
+}

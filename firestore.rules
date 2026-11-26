@@ -1,0 +1,128 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global default-deny safety net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Reusable Zero-Trust Primitives ---
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // --- Entity Validation Blueprints ---
+
+    function isValidPlayerProfile(data, userId) {
+      return data.keys().hasAll([
+               'userId', 'displayName', 'bestScore', 'highestStage',
+               'totalCandiesCleared', 'bestCombo', 'gamesPlayed',
+               'hapticsEnabled', 'createdAt', 'updatedAt'
+             ]) &&
+             data.keys().hasOnly([
+               'userId', 'displayName', 'bestScore', 'highestStage',
+               'totalCandiesCleared', 'bestCombo', 'gamesPlayed',
+               'hapticsEnabled', 'createdAt', 'updatedAt'
+             ]) &&
+             data.userId is string && data.userId == request.auth.uid && data.userId == userId &&
+             data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 40 &&
+             data.bestScore is int && data.bestScore >= 0 && data.bestScore <= 100000000 &&
+             data.highestStage is int && data.highestStage >= 1 && data.highestStage <= 1000 &&
+             data.totalCandiesCleared is int && data.totalCandiesCleared >= 0 && data.totalCandiesCleared <= 1000000000 &&
+             data.bestCombo is int && data.bestCombo >= 0 && data.bestCombo <= 500 &&
+             data.gamesPlayed is int && data.gamesPlayed >= 0 && data.gamesPlayed <= 1000000 &&
+             data.hapticsEnabled is bool &&
+             data.createdAt is timestamp && data.createdAt <= request.time &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    function isValidScoreRecord(data, userId) {
+      return data.keys().hasAll([
+               'userId', 'mode', 'score', 'stage', 'stars',
+               'candiesCleared', 'maxCombo', 'movesUsed',
+               'createdAt', 'updatedAt'
+             ]) &&
+             data.keys().hasOnly([
+               'userId', 'mode', 'score', 'stage', 'stars',
+               'candiesCleared', 'maxCombo', 'movesUsed',
+               'createdAt', 'updatedAt'
+             ]) &&
+             data.userId is string && data.userId == request.auth.uid && data.userId == userId &&
+             data.mode is string && data.mode.size() <= 20 && data.mode in ['CLEANUP', 'SCORE_RUSH'] &&
+             data.score is int && data.score >= 0 && data.score <= 100000000 &&
+             data.stage is int && data.stage >= 1 && data.stage <= 1000 &&
+             data.stars is int && data.stars >= 0 && data.stars <= 3 &&
+             data.candiesCleared is int && data.candiesCleared >= 0 && data.candiesCleared <= 100000 &&
+             data.maxCombo is int && data.maxCombo >= 1 && data.maxCombo <= 500 &&
+             data.movesUsed is int && data.movesUsed >= 0 && data.movesUsed <= 500 &&
+             data.createdAt is timestamp && data.createdAt <= request.time &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    // --- Collection Rules ---
+
+    match /users/{userId} {
+      // Strictly owner-only single-document read; never allow listing all user profiles
+      allow get: if isOwner(userId) && isValidId(userId);
+      allow list: if false;
+
+      allow create: if isOwner(userId) &&
+                       isValidId(userId) &&
+                       isValidPlayerProfile(incoming(), userId);
+
+      // Action-based update: validation blueprint wraps the entire update logic
+      allow update: if isOwner(userId) &&
+                       isValidId(userId) &&
+                       isValidPlayerProfile(incoming(), userId) &&
+                       incoming().userId == existing().userId &&
+                       incoming().createdAt == existing().createdAt &&
+                       (
+                         // Action 1: Record game progression & cumulative stats
+                         incoming().diff(existing()).affectedKeys().hasOnly([
+                           'bestScore', 'highestStage', 'totalCandiesCleared',
+                           'bestCombo', 'gamesPlayed', 'updatedAt'
+                         ]) ||
+                         // Action 2: Update player display name or haptics preference
+                         incoming().diff(existing()).affectedKeys().hasOnly([
+                           'displayName', 'hapticsEnabled', 'updatedAt'
+                         ])
+                       );
+
+      allow delete: if isOwner(userId) && isValidId(userId);
+
+      // User-scoped high score history subcollection
+      match /scores/{scoreId} {
+        allow get: if isOwner(userId) && isValidId(userId) && isValidId(scoreId);
+        // Owner-scoped subcollection list enforced via path wildcard without referencing existing()
+        allow list: if isOwner(userId) && isValidId(userId);
+
+        allow create: if isOwner(userId) &&
+                         isValidId(userId) &&
+                         isValidId(scoreId) &&
+                         isValidScoreRecord(incoming(), userId);
+
+        // Score runs are immutable once recorded
+        allow update: if false;
+
+        allow delete: if isOwner(userId) && isValidId(userId) && isValidId(scoreId);
+      }
+    }
+  }
+}
