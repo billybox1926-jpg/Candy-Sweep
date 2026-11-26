@@ -53,4 +53,13 @@
     <string name="cd_hero_banner">Colorful candy shop tabletop banner</string>
     <string name="cd_star_earned">Earned star</string>
     <string name="cd_star_unearned">Unearned star</string>
+
+    <!-- Firebase / Google Sign-In config resources.
+         firestore_database_id is the Firestore database identifier. It is set to the
+         Firebase project ID because firebase.json names the database that way
+         (see "database" under "firestore"). default_web_client_id must be replaced
+         with the Google web OAuth client ID from the Google Cloud console
+         (Google Services / OAuth client IDs). -->
+    <string name="firestore_database_id">ai-studio-android-candyswe-b5ac019e-f44f-4b41-893c-d0d6ff58c712</string>
+    <string name="default_web_client_id">YOUR_GOOGLE_WEB_CLIENT_ID</string>
 </resources>
