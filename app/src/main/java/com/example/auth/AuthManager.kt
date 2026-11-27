@@ -58,8 +58,9 @@ fun attemptAutoSignIn(
     }
     val clientId = try {
         context.getString(R.string.default_web_client_id)
-    } catch (_: Exception) {
-        onUnauthenticated()
+    } catch (e: Exception) {
+        Log.e(AUTH_TAG, "Google Sign-In configuration is missing", e)
+        onAuthError(context.getString(R.string.auth_error_missing_config))
         return
     }
     val googleIdOption = GetGoogleIdOption.Builder()
@@ -88,7 +89,11 @@ fun attemptAutoSignIn(
             } else {
                 onUnauthenticated()
             }
-        } catch (_: Exception) {
+        } catch (e: GetCredentialCancellationException) {
+            Log.w(AUTH_TAG, "Google Sign-In flow cancelled or dismissed: ${e.message}", e)
+            onAuthCancelled()
+        } catch (e: Exception) {
+            Log.e(AUTH_TAG, "Auto-sign-in failed", e)
             onUnauthenticated()
         }
     }
