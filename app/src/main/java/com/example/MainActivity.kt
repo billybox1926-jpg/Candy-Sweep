@@ -30,6 +30,8 @@ import androidx.compose.material3.NavigationRailItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
@@ -49,6 +51,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
+import com.example.audio.CandySoundManager
 import com.example.auth.authStateFlow
 import com.example.auth.signOutGoogle
 import com.example.data.CandyRepository
@@ -142,6 +145,18 @@ private fun CandySweepMainShell(user: FirebaseUser) {
         }
     )
 
+    val soundManager = remember(context) { CandySoundManager(context) }
+    DisposableEffect(soundManager) {
+        onDispose { soundManager.release() }
+    }
+    val soundEnabled by soundManager.soundEnabled.collectAsStateWithLifecycle()
+
+    LaunchedEffect(viewModel, soundManager) {
+        viewModel.soundEvents.collect { event ->
+            soundManager.play(event)
+        }
+    }
+
     val gameState by viewModel.gameState.collectAsStateWithLifecycle()
     val profileState by viewModel.profileState.collectAsStateWithLifecycle()
     val scoresState by viewModel.scoresState.collectAsStateWithLifecycle()
@@ -194,6 +209,8 @@ private fun CandySweepMainShell(user: FirebaseUser) {
                         profileFeedback = profileFeedback,
                         personalBest = personalBest,
                         hapticsEnabled = hapticsEnabled,
+                        soundEnabled = soundEnabled,
+                        onToggleSound = soundManager::setSoundEnabled,
                         viewModel = viewModel,
                         onSignOut = {
                             signOutGoogle(credentialManager = credentialManager, scope = scope)
@@ -238,6 +255,8 @@ private fun CandySweepMainShell(user: FirebaseUser) {
                         profileFeedback = profileFeedback,
                         personalBest = personalBest,
                         hapticsEnabled = hapticsEnabled,
+                        soundEnabled = soundEnabled,
+                        onToggleSound = soundManager::setSoundEnabled,
                         viewModel = viewModel,
                         onSignOut = {
                             signOutGoogle(credentialManager = credentialManager, scope = scope)
@@ -259,6 +278,8 @@ private fun TabContent(
     profileFeedback: String?,
     personalBest: Long,
     hapticsEnabled: Boolean,
+    soundEnabled: Boolean,
+    onToggleSound: (Boolean) -> Unit,
     viewModel: CandySweepViewModel,
     onSignOut: () -> Unit
 ) {
@@ -267,6 +288,8 @@ private fun TabContent(
             gameState = gameState,
             personalBest = personalBest,
             hapticsEnabled = hapticsEnabled,
+            soundEnabled = soundEnabled,
+            onToggleSound = onToggleSound,
             onCellTapped = viewModel::onCellTapped,
             onSwipe = viewModel::onSwipe,
             onRequestHint = viewModel::requestHint,
@@ -284,6 +307,8 @@ private fun TabContent(
             email = user.email,
             profileState = profileState,
             feedbackMessage = profileFeedback,
+            soundEnabled = soundEnabled,
+            onToggleSound = onToggleSound,
             onSaveSettings = viewModel::updateProfileSettings,
             onToggleHaptics = viewModel::toggleHaptics,
             onClearFeedback = viewModel::clearProfileFeedback,

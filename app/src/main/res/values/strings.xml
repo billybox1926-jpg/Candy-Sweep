@@ -55,6 +55,8 @@
     <string name="profile_save_name">Save Name</string>
     <string name="profile_haptics_title">Tactile Haptics</string>
     <string name="profile_haptics_subtitle">Gentle vibration on candy swipes and cascades</string>
+    <string name="profile_sound_title">Sound Effects</string>
+    <string name="profile_sound_subtitle">Play candy chimes for swaps, matches, and game over</string>
     <string name="profile_sign_out">Sign Out</string>
     <string name="profile_name_saved">Profile updated</string>
     <string name="profile_name_error">Enter 1 to 40 characters</string>
@@ -69,4 +71,6 @@
     <string name="cd_move_counter_empty">Out of moves, game over</string>
     <string name="cd_game_over_icon">Out of moves</string>
     <string name="cd_victory_icon">Stage cleared</string>
+    <string name="cd_sound_on">Mute sound effects</string>
+    <string name="cd_sound_off">Enable sound effects</string>
 </resources>

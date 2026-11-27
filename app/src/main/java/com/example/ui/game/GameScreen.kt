@@ -37,6 +37,8 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.VolumeOff
+import androidx.compose.material.icons.automirrored.rounded.VolumeUp
 import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.Lightbulb
 import androidx.compose.material.icons.rounded.Refresh
@@ -47,7 +49,9 @@ import androidx.compose.material.icons.rounded.Timer
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -107,6 +111,8 @@ fun GameScreen(
     gameState: GameBoardUiState,
     personalBest: Long,
     hapticsEnabled: Boolean,
+    soundEnabled: Boolean,
+    onToggleSound: (Boolean) -> Unit,
     onCellTapped: (CellPos) -> Unit,
     onSwipe: (CellPos, Int, Int) -> Unit,
     onRequestHint: () -> Unit,
@@ -144,46 +150,82 @@ fun GameScreen(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            // Mode Switcher Row
-            SingleChoiceSegmentedButtonRow(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .testTag("mode_selector")
+            // Mode Switcher & Quick Sound Toggle Row
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                SegmentedButton(
-                    selected = gameState.stageConfig.mode == GameMode.CLEANUP,
-                    onClick = { onSwitchMode(GameMode.CLEANUP) },
-                    shape = SegmentedButtonDefaults.itemShape(index = 0, count = 2),
-                    icon = {
-                        Icon(
-                            imageVector = Icons.Rounded.AutoAwesome,
-                            contentDescription = null,
-                            modifier = Modifier.size(18.dp)
-                        )
-                    },
-                    modifier = Modifier.testTag("mode_cleanup_button")
+                SingleChoiceSegmentedButtonRow(
+                    modifier = Modifier
+                        .weight(1f)
+                        .testTag("mode_selector")
                 ) {
-                    Text(
-                        text = "${stringResource(R.string.mode_cleanup)} • ${stringResource(R.string.stage_label, gameState.stageConfig.stageNumber)}",
-                        style = MaterialTheme.typography.labelLarge
-                    )
+                    SegmentedButton(
+                        selected = gameState.stageConfig.mode == GameMode.CLEANUP,
+                        onClick = { onSwitchMode(GameMode.CLEANUP) },
+                        shape = SegmentedButtonDefaults.itemShape(index = 0, count = 2),
+                        icon = {
+                            Icon(
+                                imageVector = Icons.Rounded.AutoAwesome,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        },
+                        modifier = Modifier.testTag("mode_cleanup_button")
+                    ) {
+                        Text(
+                            text = "${stringResource(R.string.mode_cleanup)} • ${stringResource(R.string.stage_label, gameState.stageConfig.stageNumber)}",
+                            style = MaterialTheme.typography.labelLarge
+                        )
+                    }
+                    SegmentedButton(
+                        selected = gameState.stageConfig.mode == GameMode.SCORE_RUSH,
+                        onClick = { onSwitchMode(GameMode.SCORE_RUSH) },
+                        shape = SegmentedButtonDefaults.itemShape(index = 1, count = 2),
+                        icon = {
+                            Icon(
+                                imageVector = Icons.Rounded.Timer,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        },
+                        modifier = Modifier.testTag("mode_rush_button")
+                    ) {
+                        Text(
+                            text = stringResource(R.string.mode_score_rush),
+                            style = MaterialTheme.typography.labelLarge
+                        )
+                    }
                 }
-                SegmentedButton(
-                    selected = gameState.stageConfig.mode == GameMode.SCORE_RUSH,
-                    onClick = { onSwitchMode(GameMode.SCORE_RUSH) },
-                    shape = SegmentedButtonDefaults.itemShape(index = 1, count = 2),
-                    icon = {
-                        Icon(
-                            imageVector = Icons.Rounded.Timer,
-                            contentDescription = null,
-                            modifier = Modifier.size(18.dp)
-                        )
-                    },
-                    modifier = Modifier.testTag("mode_rush_button")
+
+                FilledTonalIconButton(
+                    onClick = { onToggleSound(!soundEnabled) },
+                    colors = IconButtonDefaults.filledTonalIconButtonColors(
+                        containerColor = if (soundEnabled) {
+                            MaterialTheme.colorScheme.secondaryContainer
+                        } else {
+                            MaterialTheme.colorScheme.surfaceVariant
+                        }
+                    ),
+                    modifier = Modifier
+                        .size(48.dp)
+                        .testTag("sound_toggle_button")
                 ) {
-                    Text(
-                        text = stringResource(R.string.mode_score_rush),
-                        style = MaterialTheme.typography.labelLarge
+                    Icon(
+                        imageVector = if (soundEnabled) {
+                            Icons.AutoMirrored.Rounded.VolumeUp
+                        } else {
+                            Icons.AutoMirrored.Rounded.VolumeOff
+                        },
+                        contentDescription = stringResource(
+                            if (soundEnabled) R.string.cd_sound_on else R.string.cd_sound_off
+                        ),
+                        tint = if (soundEnabled) {
+                            StrawberryPop
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        }
                     )
                 }
             }

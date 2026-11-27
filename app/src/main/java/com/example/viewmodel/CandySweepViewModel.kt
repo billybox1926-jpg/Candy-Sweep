@@ -3,6 +3,7 @@ package com.example.viewmodel
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.audio.SoundEvent
 import com.example.data.CandyRepository
 import com.example.data.GameMode
 import com.example.data.PlayerProfile
@@ -24,9 +25,12 @@ import com.google.firebase.firestore.FirebaseFirestoreException
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.map
@@ -168,6 +172,9 @@ class CandySweepViewModel(
     private val _profileFeedback = MutableStateFlow<String?>(null)
     val profileFeedback: StateFlow<String?> = _profileFeedback.asStateFlow()
 
+    private val _soundEvents = MutableSharedFlow<SoundEvent>(extraBufferCapacity = 16)
+    val soundEvents: SharedFlow<SoundEvent> = _soundEvents.asSharedFlow()
+
     private var eventIdCounter = 1L
     private var idleHintJob: Job? = null
     private var syncedInitialStage = false
@@ -274,6 +281,7 @@ class CandySweepViewModel(
         viewModelScope.launch {
             _gameState.update { it.copy(busy = true, selectedCell = null, hintCells = emptySet()) }
             val shuffledBoard = state.candyBoard.shuffle()
+            emitSound(SoundEvent.Shuffle)
             _gameState.update {
                 it.copy(
                     candyBoard = shuffledBoard,
@@ -293,6 +301,11 @@ class CandySweepViewModel(
         viewModelScope.launch {
             val initial = _gameState.value
             val swappedVisual = initial.candyBoard.swap(a, b)
+            val swipeResult = initial.candyBoard.evaluateSwap(a, b)
+
+            if (swipeResult is SwipeAttempt.ValidMatch) {
+                emitSound(SoundEvent.SwapSuccess)
+            }
 
             _gameState.update {
                 it.copy(
@@ -305,13 +318,14 @@ class CandySweepViewModel(
             }
             delay(150)
 
-            when (val swipeResult = initial.candyBoard.evaluateSwap(a, b)) {
+            when (swipeResult) {
                 is SwipeAttempt.OutOfBounds -> {
                     _gameState.update { it.copy(candyBoard = initial.candyBoard, busy = false) }
                     scheduleIdleHint()
                     return@launch
                 }
                 is SwipeAttempt.InvalidSwap -> {
+                    emitSound(SoundEvent.SwapInvalid)
                     _gameState.update {
                         it.copy(
                             candyBoard = initial.candyBoard,
@@ -364,9 +378,12 @@ class CandySweepViewModel(
                             highlight = comboStep >= 2 || resolution.triggeredSpecialCount > 0
                         )
 
-                        val bigHit = comboStep >= 2 ||
-                            resolution.triggeredSpecialCount > 0 ||
+                        val isSpecialHit = resolution.triggeredSpecialCount > 0 ||
+                            clearStep.spawnedSpecialIds.isNotEmpty() ||
                             clearStep.frostingClearedCount > 0
+                        emitSound(SoundEvent.CandyMatch(comboLevel = comboStep, isSpecial = isSpecialHit))
+
+                        val bigHit = comboStep >= 2 || isSpecialHit
                         _gameState.update { st ->
                             st.copy(
                                 candyBoard = activeBoard.withFrosting(clearStep.boardAfterClear.frosting),
@@ -438,6 +455,7 @@ class CandySweepViewModel(
                         TurnOutcome.CONTINUE -> {
                             if (!activeBoard.hasValidMoves()) {
                                 val reshuffled = activeBoard.shuffle()
+                                emitSound(SoundEvent.Shuffle)
                                 _gameState.update {
                                     it.copy(
                                         candyBoard = reshuffled,
@@ -451,6 +469,9 @@ class CandySweepViewModel(
                                     MoveRules.LOW_MOVES_THRESHOLD -> "${MoveRules.LOW_MOVES_THRESHOLD} Moves Left!"
                                     MoveRules.CRITICAL_MOVES_THRESHOLD -> "Last Move!"
                                     else -> null
+                                }
+                                if (lowMoveCue != null) {
+                                    emitSound(SoundEvent.LowMovesWarning)
                                 }
                                 _gameState.update {
                                     it.copy(
@@ -480,6 +501,12 @@ class CandySweepViewModel(
         val currentProfile = (profileState.value as? UiState.Success)?.data
         val previousBest = currentProfile?.bestScore ?: 0L
         val isNewBest = finalScore > previousBest && finalScore > 0L
+
+        when (outcome) {
+            RunOutcome.OUT_OF_MOVES -> emitSound(SoundEvent.GameOver)
+            RunOutcome.STAGE_CLEARED, RunOutcome.RUSH_COMPLETE -> emitSound(SoundEvent.Victory)
+            RunOutcome.PLAYING -> Unit
+        }
 
         _gameState.update {
             it.copy(
@@ -557,6 +584,10 @@ class CandySweepViewModel(
                 }
             }
         }
+    }
+
+    private fun emitSound(event: SoundEvent) {
+        _soundEvents.tryEmit(event)
     }
 
     private fun nextEventId(): Long = eventIdCounter++
