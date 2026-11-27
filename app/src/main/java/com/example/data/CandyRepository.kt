@@ -110,7 +110,7 @@ class CandyRepository(
                 ) ?: PlayerProfile(id = uid, userId = uid)
                 return Result.success(parsed)
             }
-            val safeName = sanitizeDisplayName(initialDisplayName)
+            val safeName = sanitizeDisplayName(initialDisplayName, uid)
             val payload = mapOf(
                 "userId" to uid,
                 "displayName" to safeName,
@@ -165,7 +165,9 @@ class CandyRepository(
             // Ensure profile exists before updating stats
             val profile = currentProfile ?: ensureProfile(
                 userId = uid,
-                initialDisplayName = auth.currentUser?.displayName ?: "Sweet Sweeper"
+                initialDisplayName = auth.currentUser?.displayName
+                    ?.takeIf { it.isNotBlank() }
+                    ?: "Sweet Sweeper #${uid.takeLast(4)}"
             ).getOrThrow()
 
             // 1. Write immutable score record
@@ -263,9 +265,9 @@ class CandyRepository(
         }
     }
 
-    private fun sanitizeDisplayName(raw: String): String {
+    private fun sanitizeDisplayName(raw: String, userId: String): String {
         val cleaned = raw.trim().take(MAX_DISPLAY_NAME)
-        return cleaned.ifEmpty { "Sweet Sweeper" }
+        return cleaned.ifEmpty { "Sweet Sweeper #${userId.takeLast(4)}" }
     }
 
     private companion object {
